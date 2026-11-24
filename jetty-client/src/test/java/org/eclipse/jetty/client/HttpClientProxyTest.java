@@ -398,4 +398,45 @@ public class HttpClientProxyTest extends AbstractHttpClientServerTest
         Assert.assertEquals(status, response2.getStatus());
         Assert.assertEquals(1, requests.get());
     }
+
+    @Test
+    public void testProxiedRequestWithRelativePathLikeAuthority() throws Exception
+    {
+        final String serverHost = "server";
+        final String path = ";@host.org/url";
+        final int status = HttpStatus.NO_CONTENT_204;
+        start(new AbstractHandler()
+        {
+            @Override
+            public void handle(String target, org.eclipse.jetty.server.Request baseRequest, HttpServletRequest request, HttpServletResponse response) throws IOException, ServletException
+            {
+                baseRequest.setHandled(true);
+                if (!URI.create(baseRequest.getHttpURI().toString()).isAbsolute())
+                    response.setStatus(HttpServletResponse.SC_USE_PROXY);
+                else if (serverHost.equals(request.getServerName()) && ("/" + path).equals(request.getRequestURI()))
+                    response.setStatus(status);
+                else
+                    response.setStatus(HttpServletResponse.SC_NOT_ACCEPTABLE);
+            }
+        });
+
+        int proxyPort = connector.getLocalPort();
+        int serverPort = proxyPort + 1; // Any port will do for these tests - just not the same as the proxy
+        client.getProxyConfiguration().getProxies().add(new HttpProxy("localhost", proxyPort));
+
+        // The relative path must not be able to change the
+        // authority of the absolute-form target sent to the proxy.
+        Request request = client.newRequest(serverHost, serverPort)
+                .scheme(scheme)
+                .path(path)
+                .timeout(5, TimeUnit.SECONDS);
+
+        Assert.assertEquals("/" + path, request.getPath());
+        Assert.assertEquals(serverHost, request.getURI().getHost());
+        Assert.assertEquals(serverPort, request.getURI().getPort());
+
+        ContentResponse response = request.send();
+
+        Assert.assertEquals(status, response.getStatus());
+    }
 }

@@ -24,15 +24,18 @@ import java.io.BufferedReader;
 import java.io.IOException;
 import java.io.InputStreamReader;
 import java.io.PrintWriter;
+import java.net.HttpCookie;
 import java.net.InetSocketAddress;
 import java.net.ServerSocket;
 import java.net.Socket;
 import java.net.SocketException;
+import java.net.URI;
 import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
 import java.util.Locale;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicReference;
 
 import javax.servlet.ServletException;
 import javax.servlet.http.HttpServletRequest;
@@ -566,6 +569,73 @@ public class HttpClientURITest extends AbstractHttpClientServerTest
         ContentResponse response = request.send();
 
         Assert.assertEquals(HttpStatus.OK_200, response.getStatus());
+    }
+
+    @Test
+    public void testPathWithPathParameter() throws Exception
+    {
+        final AtomicReference<String> serverRequestURI = new AtomicReference<>();
+        final AtomicReference<String> serverName = new AtomicReference<>();
+        final AtomicReference<String> serverCookie = new AtomicReference<>();
+        start(new AbstractHandler()
+        {
+            @Override
+            public void handle(String target, org.eclipse.jetty.server.Request baseRequest, HttpServletRequest request, HttpServletResponse response) throws IOException, ServletException
+            {
+                baseRequest.setHandled(true);
+                serverRequestURI.set(request.getRequestURI());
+                serverName.set(request.getServerName());
+                serverCookie.set(request.getHeader(HttpHeader.COOKIE.asString()));
+            }
+        });
+
+        // A cookie that belongs to another host, that must never be sent to this server.
+        HttpCookie cookie = new HttpCookie("secret", "value");
+        cookie.setDomain("host.org");
+        cookie.setPath("/");
+        client.getCookieStore().add(URI.create(scheme + "://host.org/"), cookie);
+
+        Request request1 = client.newRequest("localhost", connector.getLocalPort())
+                .scheme(scheme)
+                .timeout(5, TimeUnit.SECONDS)
+                .path("/url;p=v");
+        Assert.assertEquals("/url;p=v", request1.getPath());
+        ContentResponse response1 = request1.send();
+        Assert.assertEquals(HttpStatus.OK_200, response1.getStatus());
+        Assert.assertEquals("/url;p=v", serverRequestURI.get());
+
+        // Relative path starting with a path parameter.
+        Request request2 = client.newRequest("localhost", connector.getLocalPort())
+                .scheme(scheme)
+                .timeout(5, TimeUnit.SECONDS)
+                .path(";p=v/url");
+        Assert.assertEquals("/;p=v/url", request2.getPath());
+        URI uri2 = request2.getURI();
+        Assert.assertEquals("localhost", uri2.getHost());
+        Assert.assertEquals(connector.getLocalPort(), uri2.getPort());
+        Assert.assertEquals("/;p=v/url", uri2.getRawPath());
+        ContentResponse response2 = request2.send();
+        Assert.assertEquals(HttpStatus.OK_200, response2.getStatus());
+        Assert.assertEquals("/;p=v/url", serverRequestURI.get());
+
+        // Relative path that would otherwise be parsed as part of the authority.
+        Request request3 = client.newRequest("localhost", connector.getLocalPort())
+                .scheme(scheme)
+                .timeout(5, TimeUnit.SECONDS)
+                .path(";@host.org/url");
+        Assert.assertEquals("/;@host.org/url", request3.getPath());
+        URI uri3 = request3.getURI();
+        Assert.assertEquals("localhost", uri3.getHost());
+        Assert.assertEquals(connector.getLocalPort(), uri3.getPort());
+        Assert.assertNull(uri3.getUserInfo());
+        Assert.assertEquals("/;@host.org/url", uri3.getRawPath());
+        ContentResponse response3 = request3.send();
+        Assert.assertEquals(HttpStatus.OK_200, response3.getStatus());
+        Assert.assertEquals("/;@host.org/url", serverRequestURI.get());
+        Assert.assertEquals("localhost", serverName.get());
+        // The cookie of the other host must not have been sent.
+        Assert.assertNull(serverCookie.get());
+        Assert.assertNull(request3.getHeaders().get(HttpHeader.COOKIE));
     }
 
     private static class IDNRedirectServer implements Runnable
