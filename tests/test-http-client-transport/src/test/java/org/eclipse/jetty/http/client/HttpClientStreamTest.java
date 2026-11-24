@@ -1024,8 +1024,17 @@ public class HttpClientStreamTest extends AbstractTest
         };
         InputStreamContentProvider content = new InputStreamContentProvider(stream);
 
+        // Connect to a just-closed loopback port so the connect fails fast with "connection refused".
+        // The original target 0.0.0.1 no longer fails immediately on Linux >= 5.3 kernels (the
+        // connect hangs until the client connect timeout), which made this test time out.
+        int closedPort;
+        try (java.net.ServerSocket probe = new java.net.ServerSocket(0))
+        {
+            closedPort = probe.getLocalPort();
+        }
+
         final CountDownLatch completeLatch = new CountDownLatch(1);
-        client.newRequest("0.0.0.1", connector.getLocalPort())
+        client.newRequest("127.0.0.1", closedPort)
                 .scheme(getScheme())
                 .content(content)
                 .send(result ->

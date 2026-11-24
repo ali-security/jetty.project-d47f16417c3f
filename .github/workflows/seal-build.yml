@@ -1,0 +1,232 @@
+name: seal-build
+
+# Upstream jetty 9.3.x has no GitHub Actions CI; it built on Jenkins (Jenkinsfile:
+# jdk8 + maven3, `mvn -B clean install`, then `mvn -B install` for tests). This
+# workflow mirrors that on JDK 8, scoped to the jetty-client artifact (main + config
+# jar) plus the modules whose tests cover the code paths later security fixes touch.
+#
+# JDK: Zulu 8u172 (the JDK 8 update current at the 9.3.24 release). The root pom
+# activates per-java.version profiles that set alpn.version; on 8u172 it resolves
+# to alpn-boot 8.1.12.v20180117, which jetty-http2/http2-http-client-transport and
+# tests/test-http-client-transport put on -Xbootclasspath/p. On a modern 8u the
+# property stays "undefined" and those modules cannot run.
+
+on:
+  workflow_dispatch:
+    inputs:
+      test-filter:
+        description: "Surefire -Dtest selector; empty runs the full suite"
+        required: false
+        default: ""
+
+jobs:
+  build:
+    name: build (${{ matrix.leg }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 50
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # jetty-client, its upstream modules and the modules that cover patched paths
+          # (util, io, http, server, security, servlet, client, proxy, ...), with
+          # their full test suites.
+          - leg: core
+            deps: ""
+            modules: jetty-proxy,jetty-servlet
+          # Further modules covering patched paths: jetty-servlets (DoSFilter, CGI,
+          # PushCacheFilter, ...), http2 (PushCacheFilterTest) and
+          # tests/test-http-client-transport (HttpClientLoadTest). Their upstream
+          # modules are installed without tests first (they are tested in the core leg).
+          - leg: coverage
+            deps: jetty-servlets,jetty-http2/http2-hpack,jetty-http2/http2-common,jetty-http2/http2-server,jetty-http2/http2-client,jetty-http2/http2-http-client-transport,tests/test-http-client-transport
+            modules: jetty-servlets,jetty-http2/http2-hpack,jetty-http2/http2-common,jetty-http2/http2-server,jetty-http2/http2-client,jetty-http2/http2-http-client-transport,tests/test-http-client-transport
+    env:
+      MAVEN_VERSION: 3.9.4
+      MAVEN_OPTS: -Xms256m -Xmx2g -Djava.awt.headless=true -Dhttps.protocols=TLSv1.2
+      LC_ALL: C.UTF-8
+      LANG: C.UTF-8
+    steps:
+      - uses: actions/checkout@v4
+
+      # Zulu 8u172 ships 2018-era root certificates; its cacerts is replaced with
+      # a current one from a JDK preinstalled on the runner image (or the system
+      # Java CA store), so no extra JDK download is needed just for certificates.
+      - name: Set up Zulu JDK 8u172
+        run: |
+          CACERTS=""
+          for c in "$JAVA_HOME_8_X64/jre/lib/security/cacerts" "$JAVA_HOME_11_X64/lib/security/cacerts" \
+                   "$JAVA_HOME_17_X64/lib/security/cacerts" "$JAVA_HOME_21_X64/lib/security/cacerts" \
+                   /etc/ssl/certs/java/cacerts; do
+            if [ -f "$c" ]; then CACERTS="$c"; break; fi
+          done
+          echo "Using cacerts from: $CACERTS"
+          test -n "$CACERTS"
+          ZULU=zulu8.30.0.1-ca-jdk8.0.172-linux_x64
+          mkdir -p "$RUNNER_TEMP/jdk8u172"
+          curl -fsSL --retry 5 --retry-all-errors "https://cdn.azul.com/zulu/bin/${ZULU}.tar.gz" -o "$RUNNER_TEMP/zulu.tar.gz"
+          tar xzf "$RUNNER_TEMP/zulu.tar.gz" --strip-components=1 -C "$RUNNER_TEMP/jdk8u172"
+          cp "$CACERTS" "$RUNNER_TEMP/jdk8u172/jre/lib/security/cacerts"
+          echo "JAVA_HOME=$RUNNER_TEMP/jdk8u172" >> "$GITHUB_ENV"
+          echo "$RUNNER_TEMP/jdk8u172/bin" >> "$GITHUB_PATH"
+
+      - name: Install Maven ${{ env.MAVEN_VERSION }}
+        run: |
+          curl -fsSL --retry 5 --retry-all-errors "https://archive.apache.org/dist/maven/maven-3/${MAVEN_VERSION}/binaries/apache-maven-${MAVEN_VERSION}-bin.tar.gz" -o "$RUNNER_TEMP/maven.tar.gz"
+          tar xzf "$RUNNER_TEMP/maven.tar.gz" -C "$RUNNER_TEMP"
+          echo "$RUNNER_TEMP/apache-maven-${MAVEN_VERSION}/bin" >> "$GITHUB_PATH"
+
+      - name: Install upstream modules without tests (coverage leg only)
+        if: matrix.deps != ''
+        run: |
+          java -version
+          mvn -B -V -e clean install -pl "${{ matrix.deps }}" -am -DskipTests \
+            -Dmaven.javadoc.skip=true -Dcheckstyle.skip=true -Denforcer.skip=true -Dgpg.skip=true \
+            -Dlicense.skip=true -Dfindbugs.skip=true -Dpmd.skip=true
+
+      - name: Build and test (mvn install)
+        run: |
+          java -version
+          mvn -version
+          SKIPS="-Dmaven.javadoc.skip=true -Dcheckstyle.skip=true -Denforcer.skip=true -Dgpg.skip=true -Dlicense.skip=true -Dfindbugs.skip=true -Dpmd.skip=true"
+          AM="-am"
+          if [ -n "${{ matrix.deps }}" ]; then AM=""; fi
+          FILTER=""
+          if [ -n "${{ inputs.test-filter }}" ]; then
+            FILTER="-Dtest=${{ inputs.test-filter }} -DfailIfNoTests=false"
+          fi
+          mvn -B -V -e install -fae -pl "${{ matrix.modules }}" $AM $SKIPS \
+            -Dsurefire.timeout=1200 $FILTER
+
+      - name: Surefire summary (per-test skip reasons and totals)
+        if: always()
+        shell: python
+        run: |
+          import glob, os, re
+          import xml.etree.ElementTree as ET
+          tot = dict(tests=0, failures=0, errors=0, skipped=0)
+          skips, fails = [], []
+          for f in sorted(glob.glob('**/target/surefire-reports/TEST-*.xml', recursive=True)):
+              try:
+                  root = ET.parse(f).getroot()
+              except Exception as e:
+                  print('unparseable report', f, e)
+                  continue
+              mod = f.split('/target/')[0]
+              for k in tot:
+                  tot[k] += int(root.get(k, 0) or 0)
+              for tc in root.iter('testcase'):
+                  cls, name = tc.get('classname'), tc.get('name')
+                  sk = tc.find('skipped')
+                  if sk is not None:
+                      skips.append((mod, cls, name, (sk.get('message') or '').strip()))
+                  for tag in ('failure', 'error'):
+                      el = tc.find(tag)
+                      if el is not None:
+                          fails.append((mod, cls, name, tag, (el.get('message') or '')[:300]))
+
+          SKIPPY = r'@Ignore|@Stress|@Slow|assume|Assume'
+
+          def find_source(mod, fqcn):
+              rel = fqcn.replace('.', '/') + '.java'
+              p = os.path.join(mod, 'src/test/java', rel)
+              if os.path.exists(p):
+                  return p
+              hits = glob.glob('**/src/test/java/' + rel, recursive=True)
+              return hits[0] if hits else None
+
+          def class_chain(mod, cls):
+              # the test class followed by its test superclasses (inherited @Test methods
+              # and constructors that call Assume)
+              chain, fqcn = [], cls
+              while fqcn and len(chain) < 5:
+                  path = find_source(mod, fqcn)
+                  if not path:
+                      break
+                  lines = open(path, encoding='utf-8', errors='replace').read().splitlines()
+                  simple = fqcn.split('.')[-1]
+                  chain.append((simple, lines))
+                  text = '\n'.join(lines)
+                  m = re.search(r'class\s+' + simple + r'\b[^{]*?\bextends\s+(\w+)', text)
+                  if not m:
+                      break
+                  sup = m.group(1)
+                  imp = re.search(r'import\s+([\w.]+\.' + sup + r')\s*;', text)
+                  fqcn = imp.group(1) if imp else fqcn.rsplit('.', 1)[0] + '.' + sup
+              return chain
+
+          def source_reason(mod, cls, name):
+              base = re.sub(r'\[.*\]$', '', name or '')
+              out = []
+              chain = class_chain(mod, cls or '')
+              for simple, lines in chain:
+                  for i, l in enumerate(lines):
+                      if re.match(r'\s*@(Ignore|Stress|Slow)', l) and 'class ' in ''.join(lines[i:i+4]):
+                          out.append('%s class-level: %s' % (simple, l.strip()))
+                  # constructors: parameterized tests pass null for an unsupported
+                  # transport and the base constructor then calls Assume.assumeNotNull
+                  for i, l in enumerate(lines):
+                      if re.search(r'public\s+' + simple + r'\s*\(', l):
+                          for c in lines[max(0, i-1):i+8]:
+                              if re.search(r'//|' + SKIPPY + r'|\?\s*null', c):
+                                  out.append('%s constructor: %s' % (simple, c.strip()))
+                              if c.strip() == '}':
+                                  break
+              for simple, lines in chain:
+                  found = False
+                  for i, l in enumerate(lines):
+                      if re.search(r'void\s+' + re.escape(base) + r'\s*\(', l):
+                          found = True
+                          end = i + 1
+                          while end < len(lines) and end < i + 60 and '@Test' not in lines[end]:
+                              end += 1
+                          for k, c in enumerate(lines[max(0, i-5):end], max(0, i-5)):
+                              if re.search(SKIPPY, c) or (k < i and c.strip().startswith('//')):
+                                  out.append('%s#%s: %s' % (simple, base, c.strip()))
+                          # follow helper methods called from the test body
+                          body = '\n'.join(lines[i:end])
+                          for h in set(re.findall(r'\b(\w+)\s*\(', body)) - {base}:
+                              for j, hl in enumerate(lines):
+                                  if re.search(r'(private|protected)\s+[\w<>\[\]]+\s+' + re.escape(h) + r'\s*\(', hl):
+                                      for c in lines[j:j+15]:
+                                          if re.search(r'assume|Assume', c):
+                                              out.append('helper %s: %s' % (h, c.strip()))
+                          break
+                  if found:
+                      break
+              seen, uniq = set(), []
+              for r in out:
+                  if r not in seen:
+                      seen.add(r)
+                      uniq.append(r)
+              return uniq
+
+          print('=' * 72)
+          print('SKIPPED TESTS (%d) - one line each: test [module] => reason (surefire message and/or the source lines that skip it)' % len(skips))
+          for mod, cls, name, msg in skips:
+              reasons = source_reason(mod, cls, name)
+              parts = []
+              if msg:
+                  parts.append('message: ' + msg)
+              parts += reasons
+              if any('@Stress' in r for r in reasons):
+                  parts.append('@Stress tests are opt-in via -Dtest.stress=true (jetty-test-helper)')
+              if not parts:
+                  parts.append('UNRESOLVED (no message and no @Ignore/Assume found in source)')
+              print('SKIPPED: %s#%s [%s] => %s' % (cls, name, mod, ' | '.join(parts)))
+          print('=' * 72)
+          for mod, cls, name, tag, msg in fails:
+              print('%s: %s#%s [%s] %s' % (tag.upper(), cls, name, mod, msg))
+          passed = tot['tests'] - tot['failures'] - tot['errors'] - tot['skipped']
+          print('TOTAL: run=%d passed=%d failures=%d errors=%d skipped=%d'
+                % (tot['tests'], passed, tot['failures'], tot['errors'], tot['skipped']))
+
+      - name: Upload jetty-client jars
+        if: matrix.leg == 'core'
+        uses: actions/upload-artifact@v4
+        with:
+          name: jetty-client
+          path: |
+            jetty-client/target/jetty-client-9.3.24.v20180605.jar
+            jetty-client/target/jetty-client-9.3.24.v20180605-config.jar
+          if-no-files-found: error
