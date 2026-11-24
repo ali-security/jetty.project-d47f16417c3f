@@ -106,10 +106,27 @@ public abstract class HttpConnection implements Connection
 
         URI uri = request.getURI();
 
-        if (proxy instanceof HttpProxy && !HttpScheme.HTTPS.is(request.getScheme()) && uri != null)
+        boolean applyProxyAuthentication = false;
+        if (proxy instanceof HttpProxy)
         {
-            path = uri.toString();
-            request.path(path);
+            HttpProxy httpProxy = (HttpProxy)proxy;
+            // The CONNECT request that establishes the tunnel is sent to the proxy,
+            // while the other requests are tunnelled to the server.
+            boolean tunnelled = httpProxy.requiresTunnel(destination.getOrigin()) && !HttpProxy.isTunnelRequest(request);
+            if (!tunnelled)
+            {
+                if (!HttpScheme.HTTPS.is(request.getScheme()) && uri != null)
+                {
+                    path = uri.toString();
+                    request.path(path);
+                }
+
+                ((HttpRequest)request).httpProxy(httpProxy);
+
+                // Send the proxy credentials only when not tunnelled,
+                // otherwise proxy credentials are leaked to the server.
+                applyProxyAuthentication = true;
+            }
         }
 
         // If we are HTTP 1.1, add the Host header
@@ -153,7 +170,8 @@ public abstract class HttpConnection implements Connection
         }
 
         // Authentication
-        applyAuthentication(request, proxy != null ? proxy.getURI() : null);
+        if (applyProxyAuthentication)
+            applyAuthentication(request, proxy.getURI());
         applyAuthentication(request, uri);
     }
 

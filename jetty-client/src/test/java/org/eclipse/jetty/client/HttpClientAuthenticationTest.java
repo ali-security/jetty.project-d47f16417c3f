@@ -78,6 +78,11 @@ public class HttpClientAuthenticationTest extends AbstractHttpClientServerTest
         start(new DigestAuthenticator(), handler);
     }
 
+    protected int getServerPort()
+    {
+        return connector.getLocalPort();
+    }
+
     private void start(Authenticator authenticator, Handler handler) throws Exception
     {
         server = new Server();
@@ -159,7 +164,7 @@ public class HttpClientAuthenticationTest extends AbstractHttpClientServerTest
         client.getRequestListeners().add(requestListener);
 
         // Request without Authentication causes a 401
-        Request request = client.newRequest("localhost", connector.getLocalPort()).scheme(scheme).path("/secure");
+        Request request = client.newRequest("localhost", getServerPort()).scheme(scheme).path("/secure");
         ContentResponse response = request.timeout(5, TimeUnit.SECONDS).send();
         Assert.assertNotNull(response);
         Assert.assertEquals(401, response.getStatus());
@@ -180,7 +185,7 @@ public class HttpClientAuthenticationTest extends AbstractHttpClientServerTest
         client.getRequestListeners().add(requestListener);
 
         // Request with authentication causes a 401 (no previous successful authentication) + 200
-        request = client.newRequest("localhost", connector.getLocalPort()).scheme(scheme).path("/secure");
+        request = client.newRequest("localhost", getServerPort()).scheme(scheme).path("/secure");
         response = request.timeout(5, TimeUnit.SECONDS).send();
         Assert.assertNotNull(response);
         Assert.assertEquals(200, response.getStatus());
@@ -200,7 +205,7 @@ public class HttpClientAuthenticationTest extends AbstractHttpClientServerTest
 
         // Further requests do not trigger 401 because there is a previous successful authentication
         // Remove existing header to be sure it's added by the implementation
-        request = client.newRequest("localhost", connector.getLocalPort()).scheme(scheme).path("/secure");
+        request = client.newRequest("localhost", getServerPort()).scheme(scheme).path("/secure");
         response = request.timeout(5, TimeUnit.SECONDS).send();
         Assert.assertNotNull(response);
         Assert.assertEquals(200, response.getStatus());
@@ -238,7 +243,7 @@ public class HttpClientAuthenticationTest extends AbstractHttpClientServerTest
         };
         client.getRequestListeners().add(requestListener);
 
-        ContentResponse response = client.newRequest("localhost", connector.getLocalPort())
+        ContentResponse response = client.newRequest("localhost", getServerPort())
                 .scheme(scheme)
                 .path("/secure")
                 .timeout(5, TimeUnit.SECONDS)
@@ -277,7 +282,7 @@ public class HttpClientAuthenticationTest extends AbstractHttpClientServerTest
         };
         client.getRequestListeners().add(requestListener);
 
-        ContentResponse response = client.newRequest("localhost", connector.getLocalPort())
+        ContentResponse response = client.newRequest("localhost", getServerPort())
                 .scheme(scheme)
                 .path("/redirect")
                 .timeout(5, TimeUnit.SECONDS)
@@ -309,7 +314,7 @@ public class HttpClientAuthenticationTest extends AbstractHttpClientServerTest
         BasicAuthentication authentication = new BasicAuthentication(uri, realm, "basic", "basic");
         authenticationStore.addAuthentication(authentication);
 
-        Request request = client.newRequest("localhost", connector.getLocalPort()).scheme(scheme).path("/secure");
+        Request request = client.newRequest("localhost", getServerPort()).scheme(scheme).path("/secure");
         ContentResponse response = request.timeout(5, TimeUnit.SECONDS).send();
         Assert.assertNotNull(response);
         Assert.assertEquals(200, response.getStatus());
@@ -318,18 +323,18 @@ public class HttpClientAuthenticationTest extends AbstractHttpClientServerTest
         authenticationStore.removeAuthentication(authentication);
 
         requests.set(new CountDownLatch(1));
-        request = client.newRequest("localhost", connector.getLocalPort()).scheme(scheme).path("/secure");
+        request = client.newRequest("localhost", getServerPort()).scheme(scheme).path("/secure");
         response = request.timeout(5, TimeUnit.SECONDS).send();
         Assert.assertNotNull(response);
         Assert.assertEquals(200, response.getStatus());
         Assert.assertTrue(requests.get().await(5, TimeUnit.SECONDS));
 
-        Authentication.Result result = authenticationStore.findAuthenticationResult(request.getURI());
+        Authentication.Result result = authenticationStore.findAuthenticationResult(uri);
         Assert.assertNotNull(result);
         authenticationStore.removeAuthenticationResult(result);
 
         requests.set(new CountDownLatch(1));
-        request = client.newRequest("localhost", connector.getLocalPort()).scheme(scheme).path("/secure");
+        request = client.newRequest("localhost", getServerPort()).scheme(scheme).path("/secure");
         response = request.timeout(5, TimeUnit.SECONDS).send();
         Assert.assertNotNull(response);
         Assert.assertEquals(401, response.getStatus());
@@ -346,7 +351,7 @@ public class HttpClientAuthenticationTest extends AbstractHttpClientServerTest
         BasicAuthentication authentication = new BasicAuthentication(uri, realm, "basic", "wrong");
         authenticationStore.addAuthentication(authentication);
 
-        Request request = client.newRequest("localhost", connector.getLocalPort()).scheme(scheme).path("/secure");
+        Request request = client.newRequest("localhost", getServerPort()).scheme(scheme).path("/secure");
         ContentResponse response = request.timeout(5, TimeUnit.SECONDS).send();
         Assert.assertNotNull(response);
         Assert.assertEquals(401, response.getStatus());
@@ -377,7 +382,7 @@ public class HttpClientAuthenticationTest extends AbstractHttpClientServerTest
         });
 
         final CountDownLatch latch = new CountDownLatch(1);
-        client.newRequest("localhost", connector.getLocalPort())
+        client.newRequest("localhost", getServerPort())
                 .scheme(scheme)
                 .path("/secure")
                 .timeout(5, TimeUnit.SECONDS)
@@ -414,7 +419,7 @@ public class HttpClientAuthenticationTest extends AbstractHttpClientServerTest
             }
         });
 
-        ContentResponse response = client.newRequest("localhost", connector.getLocalPort())
+        ContentResponse response = client.newRequest("localhost", getServerPort())
                 .scheme(scheme)
                 .path("/secure")
                 .timeout(5, TimeUnit.SECONDS)
@@ -437,7 +442,7 @@ public class HttpClientAuthenticationTest extends AbstractHttpClientServerTest
         CountDownLatch successLatch = new CountDownLatch(1);
         CountDownLatch resultLatch = new CountDownLatch(1);
         DeferredContentProvider content = new DeferredContentProvider();
-        Request request = client.newRequest("localhost", connector.getLocalPort())
+        Request request = client.newRequest("localhost", getServerPort())
                 .scheme(scheme)
                 .path("/secure")
                 .content(content)

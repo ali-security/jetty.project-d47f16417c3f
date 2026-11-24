@@ -83,6 +83,7 @@ public class HttpRequest implements Request
     private Map<String, Object> attributes;
     private List<RequestListener> requestListeners;
     private BiFunction<Request, Request, Response.CompleteListener> pushListener;
+    private HttpProxy httpProxy;
 
     protected HttpRequest(HttpClient client, HttpConversation conversation, URI uri)
     {
@@ -743,6 +744,21 @@ public class HttpRequest implements Request
     public Throwable getAbortCause()
     {
         return aborted.get();
+    }
+
+    /**
+     * @return the {@link HttpProxy} this request has been sent to,
+     * or null if this request has not been sent to a proxy
+     * (either sent directly to the server, or tunnelled to the server)
+     */
+    HttpProxy getHttpProxy()
+    {
+        return httpProxy;
+    }
+
+    void httpProxy(HttpProxy httpProxy)
+    {
+        this.httpProxy = httpProxy;
     }
 
     private String buildQuery()
