@@ -54,6 +54,137 @@ public class HttpAuthenticationStoreTest
     }
 
     @Test
+    public void testFindAuthenticationWithURI()
+    {
+        String[][] cases =
+        {
+            // registered,             requested,                  matches
+            {"http://host",            "http://host/any",          "true"},
+            {"http://host/",           "http://host/any",          "true"},
+            {"http://host/",           "http://HOST/any",          "true"},
+            {"http://host/",           "http://host:80/any",       "true"},
+            {"http://host/ctx/",       "http://host/ctx/",         "true"},
+            {"http://host/ctx/",       "http://host/ctx",          "true"},
+            {"http://host/ctx",        "http://host/ctx",          "true"},
+            {"http://host/ctx",        "http://host/ctx/",         "true"},
+            {"http://host/ctx",        "http://host/ctx/;j=1",     "true"},
+            {"http://host/ctx",        "http://host/ctx?q=1",      "true"},
+            {"http://host/ctx",        "http://host/ctx/?q=1",     "true"},
+            {"http://host/ctx",        "http://host/ctx/path",     "true"},
+            {"http://host/ctx",        "http://host/ctx//path",    "true"},
+            {"http://host/ctx",        "http://host/c/../ctx/p",   "true"},
+            {"http://host/ctx",        "http://host/ctx/p/../s",   "true"},
+            {"http://host/ctx",        "http://host/ctx/./path",   "true"},
+            {"http://host/ctx/~user",  "http://host/ctx/~user",    "true"},
+            {"http://host/ctx/~user",  "http://host/ctx/%7Euser",  "true"},
+            {"http://host/ctx%2Fp",    "http://host/ctx%2fp",      "true"},
+            {"http://host/ctx%2Fp",    "http://host/ctx/p",        "false"},
+            {"http://host/ctx",        "http://host/ctx2",         "false"},
+            {"http://host/ctx/",       "http://host/ctx2",         "false"},
+            {"http://host/ctx",        "http://host/ctx2/path",    "false"},
+            {"http://host/ctx",        "http://host/c",            "false"},
+            {"http://host/ctx",        "http://host/CTX",          "false"},
+            {"http://host/ctx",        "http://host/ctx%2Fpath",   "false"},
+            {"http://host/ctx",        "http://host/ctx/..",       "false"},
+            {"http://host/ctx",        "http://host/ctx/../path",  "false"},
+            {"http://host/ctx",        "http://host/ctx/..;/path", "false"},
+            {"http://host/ctx/path",   "http://host/ctx",          "false"},
+            {"http://host/ctx/path",   "http://host/ctx/",         "false"},
+        };
+
+        for (String[] c : cases)
+            testFindAuthenticationWithURI(c[0], c[1], Boolean.parseBoolean(c[2]));
+    }
+
+    @Test
+    public void testFindAuthenticationWithEncodedURI()
+    {
+        String[][] cases =
+        {
+            // registered,                 requested,                      matches
+            {"http://host/ctx",            "http://host/ctx/%2E/path",     "true"},
+            {"http://host/ctx",            "http://host/ctx/p/%2e%2e/s",   "true"},
+            {"http://host/ctx/caf%C3%A9",  "http://host/ctx/caf%c3%a9/p",  "true"},
+            {"http://host/ctx",            "http://host/ctx/%2E%2E",       "false"},
+            {"http://host/ctx",            "http://host/ctx/%2E%2E/path",  "false"},
+            {"http://host/ctx",            "http://host/ctx/%2e%2e;/path", "false"},
+            {"http://host/ctx",            "http://host/ctx/.%2E/path",    "false"},
+            {"http://host/ctx",            "http://host/ctx;p=1/../path",  "false"},
+            {"http://host/ctx",            "http://host/ctx/../../path",   "false"},
+            {"http://host/ctx",            "http://host/ctx%3B/path",      "false"},
+        };
+
+        for (String[] c : cases)
+            testFindAuthenticationWithURI(c[0], c[1], Boolean.parseBoolean(c[2]));
+    }
+
+    private void testFindAuthenticationWithURI(String registered, String requested, boolean matches)
+    {
+        AuthenticationStore store = new HttpAuthenticationStore();
+
+        URI uri1 = URI.create(registered);
+        String realm = "realm";
+        store.addAuthentication(new BasicAuthentication(uri1, realm, "user", "password"));
+
+        URI uri2 = URI.create(requested);
+        Authentication result = store.findAuthentication("Basic", uri2, realm);
+        String message = "registered=" + registered + ", requested=" + requested + ", matches=" + matches;
+        if (matches)
+            Assert.assertNotNull(message, result);
+        else
+            Assert.assertNull(message, result);
+
+        store.clearAuthentications();
+    }
+
+    @Test
+    public void testFindAuthenticationResultWithURI()
+    {
+        String[][] cases =
+        {
+            // registered,         requested,                     matches
+            {"http://host/ctx",    "http://host/ctx/path",        "true"},
+            {"http://host/ctx",    "http://host/ctx2",            "false"},
+            {"http://host/ctx",    "http://host/ctx/../path",     "false"},
+            {"http://host/ctx",    "http://host/ctx/%2E%2E/path", "false"},
+            {"http://host/ctx",    "http://host/ctx%2Fpath",      "false"},
+        };
+
+        for (String[] c : cases)
+            testFindAuthenticationResultWithURI(c[0], c[1], Boolean.parseBoolean(c[2]));
+    }
+
+    private void testFindAuthenticationResultWithURI(String registered, String requested, boolean matches)
+    {
+        AuthenticationStore store = new HttpAuthenticationStore();
+
+        final URI uri1 = URI.create(registered);
+        store.addAuthenticationResult(new Authentication.Result()
+        {
+            @Override
+            public URI getURI()
+            {
+                return uri1;
+            }
+
+            @Override
+            public void apply(Request request)
+            {
+            }
+        });
+
+        URI uri2 = URI.create(requested);
+        Authentication.Result result = store.findAuthenticationResult(uri2);
+        String message = "registered=" + registered + ", requested=" + requested + ", matches=" + matches;
+        if (matches)
+            Assert.assertNotNull(message, result);
+        else
+            Assert.assertNull(message, result);
+
+        store.clearAuthenticationResults();
+    }
+
+    @Test
     public void testFindAuthenticationResultWithDefaultHTTPPort() throws Exception
     {
         AuthenticationStore store = new HttpAuthenticationStore();
